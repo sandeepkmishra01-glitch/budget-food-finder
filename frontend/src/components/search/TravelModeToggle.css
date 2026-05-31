@@ -1,0 +1,44 @@
+.travel-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--surface-sunken);
+  border-radius: 8px;
+  padding: 3px;
+  flex-shrink: 0;
+}
+
+.travel-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 6px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.travel-toggle-btn.active {
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.travel-toggle-btn:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.travel-toggle-icon {
+  font-size: var(--text-base);
+}
+
+.travel-toggle-label {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .travel-toggle-label {
+    display: inline;
+  }
+}

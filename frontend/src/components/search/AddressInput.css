@@ -1,0 +1,57 @@
+.address-input {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.address-input:focus-within {
+  border-color: var(--accent-paprika);
+}
+
+.address-input-icon {
+  font-size: var(--text-lg);
+  margin-right: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.address-input-field {
+  flex: 1;
+  padding: var(--space-sm) 0;
+  font-size: var(--text-base);
+  min-width: 0;
+}
+
+.address-input-field::placeholder {
+  color: var(--text-tertiary);
+}
+
+.address-input-btn {
+  flex-shrink: 0;
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--accent-red);
+  color: oklch(0.98 0.005 55);
+  font-weight: 600;
+  font-size: var(--text-sm);
+  border-radius: 6px;
+  transition: background var(--duration-fast) var(--ease-out),
+              transform var(--duration-fast) var(--ease-out);
+}
+
+.address-input-btn:hover:not(:disabled) {
+  background: oklch(0.46 0.18 25);
+  transform: translateY(-1px);
+}
+
+.address-input-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.address-input-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
