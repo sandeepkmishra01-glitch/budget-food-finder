@@ -1,31 +1,26 @@
 @import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Figtree:wght@400;500;600;700&display=swap');
 
 :root {
-  /* Warm neutrals — tinted toward terracotta */
   --surface-base: oklch(0.97 0.008 55);
   --surface-raised: oklch(0.99 0.005 55);
   --surface-sunken: oklch(0.94 0.012 55);
   --surface-overlay: oklch(0.99 0.003 55);
 
-  /* Text hierarchy */
   --text-primary: oklch(0.22 0.02 45);
   --text-secondary: oklch(0.42 0.015 45);
   --text-tertiary: oklch(0.58 0.01 45);
 
-  /* Bold foodie accents */
   --accent-red: oklch(0.52 0.18 25);
   --accent-gold: oklch(0.72 0.15 85);
   --accent-green: oklch(0.52 0.12 145);
   --accent-paprika: oklch(0.58 0.16 35);
 
-  /* Functional */
   --border-subtle: oklch(0.88 0.01 55);
   --border-strong: oklch(0.78 0.015 55);
   --shadow-sm: 0 1px 3px oklch(0.2 0.02 45 / 0.06);
   --shadow-md: 0 4px 12px oklch(0.2 0.02 45 / 0.08);
   --shadow-lg: 0 8px 24px oklch(0.2 0.02 45 / 0.1);
 
-  /* Spacing scale (4pt base) */
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 16px;
@@ -35,7 +30,6 @@
   --space-3xl: 64px;
   --space-4xl: 96px;
 
-  /* Type scale */
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;
@@ -45,11 +39,9 @@
   --text-3xl: clamp(2rem, 4vw, 2.5rem);
   --text-4xl: clamp(2.5rem, 5vw, 3.5rem);
 
-  /* Font stacks */
   --font-display: 'Libre Baskerville', Georgia, serif;
   --font-body: 'Figtree', -apple-system, sans-serif;
 
-  /* Transitions */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-fast: 150ms;
   --duration-normal: 250ms;
