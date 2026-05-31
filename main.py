@@ -445,15 +445,20 @@ async def search(request: SearchRequest):
 
         results = [r for r in restaurants if r.get("review_count", 0) >= MIN_REVIEW_COUNT or r["id"].startswith("fsq_")]
 
-        # Get travel times and filter by max_time
+        # Get travel times — filter by max_time if available, else show all
         travel_times = await get_travel_times(lat, lng, results, request.travel_mode)
-        filtered = []
-        for r in results:
-            time_min = travel_times.get(r["id"])
-            if time_min is not None and time_min <= request.max_time:
-                r["travel_time_minutes"] = time_min
+        if travel_times:
+            filtered = []
+            for r in results:
+                time_min = travel_times.get(r["id"])
+                if time_min is not None and time_min <= request.max_time:
+                    r["travel_time_minutes"] = time_min
+                    r["travel_mode"] = request.travel_mode
+                    filtered.append(r)
+        else:
+            filtered = results
+            for r in filtered:
                 r["travel_mode"] = request.travel_mode
-                filtered.append(r)
 
         filtered = await fetch_reviews_for_restaurants(filtered)
         filtered = extract_dishes_for_restaurants(filtered)
