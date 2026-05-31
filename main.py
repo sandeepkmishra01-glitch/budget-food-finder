@@ -14,6 +14,7 @@ import httpx
 # ── Config ──────────────────────────────────────────────────────────────────
 
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+FOURSQUARE_API_KEY = os.environ.get("FOURSQUARE_API_KEY", "")
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -85,16 +86,18 @@ async def geocode_address(address: str) -> tuple[float, float] | None:
 async def search_restaurants(lat: float, lng: float, open_now: bool = True) -> list[dict]:
     search_types = ["restaurant", "cafe", "meal_takeaway", "bakery"]
     tasks = [_search_by_type(lat, lng, t, open_now) for t in search_types]
+    if FOURSQUARE_API_KEY:
+        tasks.append(_search_foursquare(lat, lng, open_now))
     all_results = await asyncio.gather(*tasks)
     combined = []
     for batch in all_results:
         combined.extend(batch)
-    # Deduplicate by place_id
+    # Deduplicate by name (cross-source)
     seen = {}
     for r in combined:
-        pid = r["google_place_id"]
-        if pid not in seen or r.get("review_count", 0) > seen[pid].get("review_count", 0):
-            seen[pid] = r
+        key = r["name"].lower().strip()
+        if key not in seen or r.get("review_count", 0) > seen[key].get("review_count", 0):
+            seen[key] = r
     return list(seen.values())
 
 
@@ -126,6 +129,58 @@ async def _search_by_type(lat: float, lng: float, place_type: str, open_now: boo
             "rating": place.get("rating", 0), "review_count": place.get("user_ratings_total", 0),
             "photo_url": photo_url, "cuisine_tags": place.get("types", []),
             "price_level": price_map.get(place.get("price_level")),
+        })
+    return results
+
+
+async def _search_foursquare(lat: float, lng: float, open_now: bool = True) -> list[dict]:
+    url = "https://api.foursquare.com/v3/places/search"
+    headers = {"Authorization": FOURSQUARE_API_KEY, "Accept": "application/json"}
+    params = {
+        "ll": f"{lat},{lng}",
+        "radius": 3000,
+        "categories": "13065,13032,13034,13040,13046,13048,13059,13064,13067",
+        "limit": 50,
+        "fields": "fsq_id,name,location,rating,price,photos,website,categories",
+    }
+    if open_now:
+        params["open_now"] = "true"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+    results = []
+    for place in data.get("results", []):
+        name = place.get("name", "")
+        name_lower = name.lower()
+        if any(w in name_lower for w in EXCLUDED_NAME_WORDS):
+            continue
+        location = place.get("location", {})
+        lat_p = location.get("latitude", 0)
+        lng_p = location.get("longitude", 0)
+        address = location.get("formatted_address", location.get("address", ""))
+        fsq_price = place.get("price")
+        price_map = {1: "$", 2: "$$", 3: "$$$", 4: "$$$$"}
+        photo_url = None
+        photos = place.get("photos", [])
+        if photos:
+            p = photos[0]
+            photo_url = f"{p.get('prefix', '')}400x300{p.get('suffix', '')}"
+        cuisine_tags = [c.get("short_name", "").lower() for c in place.get("categories", [])]
+        results.append({
+            "id": f"fsq_{place.get('fsq_id', '')}",
+            "google_place_id": None,
+            "name": name,
+            "address": address,
+            "lat": lat_p,
+            "lng": lng_p,
+            "rating": (place.get("rating", 0) / 2),
+            "review_count": 0,
+            "photo_url": photo_url,
+            "cuisine_tags": cuisine_tags,
+            "price_level": price_map.get(fsq_price),
+            "website": place.get("website"),
         })
     return results
 
