@@ -28,6 +28,11 @@ class ReviewSnippet(BaseModel):
     source: str = "google"
 
 
+class BudgetItem(BaseModel):
+    name: str
+    price_estimate: int
+
+
 class RestaurantResult(BaseModel):
     id: str
     name: str
@@ -35,6 +40,7 @@ class RestaurantResult(BaseModel):
     lat: float
     lng: float
     photo_url: str | None = None
+    google_place_id: str | None = None
     cuisine_tags: list[str] = []
     travel_time_minutes: int
     travel_mode: str
@@ -43,6 +49,7 @@ class RestaurantResult(BaseModel):
     price_level: str | None = None
     snippets: list[ReviewSnippet] = []
     dish_mentions: list[str] = []
+    budget_items: list[BudgetItem] = []
     score: float = 0.0
 
 
@@ -143,6 +150,13 @@ async def fetch_reviews_for_restaurants(restaurants: list[dict]) -> list[dict]:
     return await asyncio.gather(*tasks)
 
 
+def _is_food_review(text: str) -> bool:
+    text_lower = text.lower()
+    return bool(DISH_PATTERN.search(text_lower)) or any(
+        w in text_lower for w in ("delicious", "tasty", "flavor", "portion", "menu", "order", "dish", "meal", "cook", "fresh", "yummy")
+    )
+
+
 async def _fetch_reviews_single(restaurant: dict) -> dict:
     snippets = []
     raw_reviews = []
@@ -151,6 +165,8 @@ async def _fetch_reviews_single(restaurant: dict) -> dict:
     if google_place_id:
         for review in await _fetch_google_reviews(google_place_id):
             t = review.get("text", "")
+            if not _is_food_review(t):
+                continue
             raw_reviews.append(t)
             if len(snippets) < 2:
                 snippets.append({"text": t[:120], "source": "google"})
@@ -220,13 +236,25 @@ def extract_dishes(reviews: list[str], min_mentions: int = 2) -> list[str]:
     return [d for d, _ in sorted(frequent.items(), key=lambda x: x[1], reverse=True)[:5]]
 
 
+PRICE_RANGES = {
+    "$": (4, 8),
+    "$$": (8, 14),
+    "$$$": (14, 25),
+    "$$$$": (25, 50),
+}
+
+
 def extract_dishes_for_restaurants(restaurants: list[dict]) -> list[dict]:
     for r in restaurants:
         raw = r.pop("raw_reviews", [])
-        if raw:
-            r["dish_mentions"] = extract_dishes(raw)
-        elif "dish_mentions" not in r:
-            r["dish_mentions"] = []
+        dishes = extract_dishes(raw) if raw else r.get("dish_mentions", [])
+        price_level = r.get("price_level") or "$$"
+        low, high = PRICE_RANGES.get(price_level, (8, 14))
+        r["dish_mentions"] = dishes
+        r["budget_items"] = [
+            {"name": d, "price_estimate": low + (i * (high - low)) // max(len(dishes), 1)}
+            for i, d in enumerate(dishes)
+        ]
     return restaurants
 
 
@@ -283,6 +311,11 @@ app = FastAPI(title="Budget Food Finder", lifespan=lifespan)
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/config")
+async def get_config():
+    return {"google_maps_api_key": GOOGLE_MAPS_API_KEY}
 
 
 @app.get("/api/cuisines")
