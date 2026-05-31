@@ -20,7 +20,6 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
 class SearchRequest(BaseModel):
     address: str
-    travel_mode: Literal["walking", "transit", "driving"] = "driving"
 
 
 class ReviewSnippet(BaseModel):
@@ -42,8 +41,6 @@ class RestaurantResult(BaseModel):
     photo_url: str | None = None
     google_place_id: str | None = None
     cuisine_tags: list[str] = []
-    travel_time_minutes: int
-    travel_mode: str
     rating: float
     review_count: int
     price_level: str | None = None
@@ -55,9 +52,6 @@ class RestaurantResult(BaseModel):
 
 class SearchMeta(BaseModel):
     total_count: int
-    radius_expanded: bool = False
-    travel_mode: str
-    transit_unavailable: bool = False
 
 
 class SearchResponse(BaseModel):
@@ -66,6 +60,20 @@ class SearchResponse(BaseModel):
 
 
 # ── Services ────────────────────────────────────────────────────────────────
+
+EXCLUDED_TYPES = {"lodging", "hotel", "motel", "inn", "resort", "spa", "gym", "car_dealer", "car_repair", "gas_station", "parking"}
+EXCLUDED_NAME_WORDS = {"hotel", "inn", "motel", "resort", "suites", "lodge", "hostel"}
+
+
+def _is_restaurant(place: dict) -> bool:
+    types = set(place.get("types", []))
+    if types & EXCLUDED_TYPES:
+        return False
+    name_lower = place.get("name", "").lower()
+    if any(w in name_lower for w in EXCLUDED_NAME_WORDS):
+        return False
+    return True
+
 
 async def geocode_address(address: str) -> tuple[float, float] | None:
     url = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -80,13 +88,24 @@ async def geocode_address(address: str) -> tuple[float, float] | None:
 
 
 async def search_restaurants(lat: float, lng: float) -> list[dict]:
-    return await _search_google_places(lat, lng)
+    search_types = ["restaurant", "cafe", "meal_takeaway", "bakery"]
+    tasks = [_search_by_type(lat, lng, t) for t in search_types]
+    all_results = await asyncio.gather(*tasks)
+    combined = []
+    for batch in all_results:
+        combined.extend(batch)
+    # Deduplicate by place_id
+    seen = {}
+    for r in combined:
+        pid = r["google_place_id"]
+        if pid not in seen or r.get("review_count", 0) > seen[pid].get("review_count", 0):
+            seen[pid] = r
+    return list(seen.values())
 
 
-
-async def _search_google_places(lat: float, lng: float) -> list[dict]:
+async def _search_by_type(lat: float, lng: float, place_type: str) -> list[dict]:
     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-    params = {"location": f"{lat},{lng}", "radius": 8000, "type": "restaurant", "key": GOOGLE_MAPS_API_KEY}
+    params = {"location": f"{lat},{lng}", "radius": 3000, "type": place_type, "key": GOOGLE_MAPS_API_KEY}
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, params=params)
         if resp.status_code != 200:
@@ -94,6 +113,8 @@ async def _search_google_places(lat: float, lng: float) -> list[dict]:
         data = resp.json()
     results = []
     for place in data.get("results", []):
+        if not _is_restaurant(place):
+            continue
         geo = place.get("geometry", {}).get("location", {})
         photo_url = None
         if place.get("photos"):
@@ -109,39 +130,6 @@ async def _search_google_places(lat: float, lng: float) -> list[dict]:
             "photo_url": photo_url, "cuisine_tags": place.get("types", []),
             "price_level": price_map.get(place.get("price_level")),
         })
-    return results
-
-
-
-BATCH_SIZE = 25
-
-
-async def get_travel_times(origin_lat: float, origin_lng: float, restaurants: list[dict], mode: str) -> dict[str, int]:
-    if not restaurants:
-        return {}
-    origin = f"{origin_lat},{origin_lng}"
-    batches = [restaurants[i:i + BATCH_SIZE] for i in range(0, len(restaurants), BATCH_SIZE)]
-    results = {}
-    async with httpx.AsyncClient() as client:
-        batch_results = await asyncio.gather(*[_fetch_travel_batch(client, origin, b, mode) for b in batches])
-    for br in batch_results:
-        results.update(br)
-    return results
-
-
-async def _fetch_travel_batch(client: httpx.AsyncClient, origin: str, batch: list[dict], mode: str) -> dict[str, int]:
-    destinations = "|".join(f"{r['lat']},{r['lng']}" for r in batch)
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    params = {"origins": origin, "destinations": destinations, "mode": mode, "key": GOOGLE_MAPS_API_KEY}
-    resp = await client.get(url, params=params)
-    data = resp.json()
-    results = {}
-    elements = data.get("rows", [{}])[0].get("elements", [])
-    for i, element in enumerate(elements):
-        if i >= len(batch):
-            break
-        if element.get("status") == "OK":
-            results[batch[i]["id"]] = element["duration"]["value"] // 60
     return results
 
 
@@ -262,12 +250,11 @@ def extract_dishes_for_restaurants(restaurants: list[dict]) -> list[dict]:
 
 def rank_results(restaurants: list[dict]) -> list[dict]:
     for r in restaurants:
-        rating_score = (r.get("rating", 0) / 5.0) * 0.40
-        review_score = (min(r.get("review_count", 0), 1000) / 1000) * 0.30
+        rating_score = (r.get("rating", 0) / 5.0) * 0.50
+        review_score = (min(r.get("review_count", 0), 1000) / 1000) * 0.25
         price_map = {"$": 1.0, "$$": 0.6, "$$$": 0.3, "$$$$": 0.1}
-        price_score = price_map.get(r.get("price_level") or "$$", 0.5) * 0.20
-        travel_score = ((45 - r.get("travel_time_minutes", 45)) / 45) * 0.10
-        r["score"] = rating_score + review_score + price_score + travel_score
+        price_score = price_map.get(r.get("price_level") or "$$", 0.5) * 0.25
+        r["score"] = rating_score + review_score + price_score
     restaurants.sort(key=lambda r: r["score"], reverse=True)
     return restaurants
 
@@ -294,10 +281,7 @@ CUISINES = [
 
 # ── App ─────────────────────────────────────────────────────────────────────
 
-MIN_RESULTS = 5
-PRIMARY_TIME_LIMIT = 20
-EXPANDED_TIME_LIMIT = 45
-MIN_REVIEW_COUNT = 10
+MIN_REVIEW_COUNT = 5
 
 
 @asynccontextmanager
@@ -327,46 +311,19 @@ async def get_cuisines():
 async def search(request: SearchRequest):
     coords = await geocode_address(request.address)
     if not coords:
-        return SearchResponse(results=[], meta=SearchMeta(total_count=0, travel_mode=request.travel_mode))
+        return SearchResponse(results=[], meta=SearchMeta(total_count=0))
 
     lat, lng = coords
     restaurants = await search_restaurants(lat, lng)
-    travel_times = await get_travel_times(lat, lng, restaurants, request.travel_mode)
 
-    transit_unavailable = request.travel_mode == "transit" and not travel_times
-
-    results = []
-    for r in restaurants:
-        time_min = travel_times.get(r["id"])
-        if time_min is not None and time_min <= PRIMARY_TIME_LIMIT:
-            r["travel_time_minutes"] = time_min
-            results.append(r)
-
-    radius_expanded = False
-    if len(results) < MIN_RESULTS and not transit_unavailable:
-        radius_expanded = True
-        for r in restaurants:
-            time_min = travel_times.get(r["id"])
-            if time_min is not None and PRIMARY_TIME_LIMIT < time_min <= EXPANDED_TIME_LIMIT:
-                r["travel_time_minutes"] = time_min
-                results.append(r)
-
-    results = [r for r in results if r.get("review_count", 0) >= MIN_REVIEW_COUNT]
+    results = [r for r in restaurants if r.get("review_count", 0) >= MIN_REVIEW_COUNT]
     results = await fetch_reviews_for_restaurants(results)
     results = extract_dishes_for_restaurants(results)
     results = rank_results(results)
 
-    for r in results:
-        r["travel_mode"] = request.travel_mode
-
     return SearchResponse(
         results=results,
-        meta=SearchMeta(
-            total_count=len(results),
-            radius_expanded=radius_expanded,
-            travel_mode=request.travel_mode,
-            transit_unavailable=transit_unavailable,
-        ),
+        meta=SearchMeta(total_count=len(results)),
     )
 
 
