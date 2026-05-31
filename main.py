@@ -15,6 +15,7 @@ import httpx
 
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 FOURSQUARE_API_KEY = os.environ.get("FOURSQUARE_API_KEY", "")
+YELP_API_KEY = os.environ.get("YELP_API_KEY", "")
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,8 @@ async def search_restaurants(lat: float, lng: float, open_now: bool = True) -> l
     tasks = [_search_by_type(lat, lng, t, open_now) for t in search_types]
     if FOURSQUARE_API_KEY:
         tasks.append(_search_foursquare(lat, lng, open_now))
+    if YELP_API_KEY:
+        tasks.append(_search_yelp(lat, lng))
     all_results = await asyncio.gather(*tasks)
     combined = []
     for batch in all_results:
@@ -181,6 +184,43 @@ async def _search_foursquare(lat: float, lng: float, open_now: bool = True) -> l
             "cuisine_tags": cuisine_tags,
             "price_level": price_map.get(fsq_price),
             "website": place.get("website"),
+        })
+    return results
+
+
+async def _search_yelp(lat: float, lng: float) -> list[dict]:
+    url = "https://api.yelp.com/v3/businesses/search"
+    headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
+    params = {
+        "latitude": lat, "longitude": lng, "radius": 3000,
+        "categories": "food,restaurants,cafes,bakeries",
+        "limit": 50, "sort_by": "best_match", "open_now": True,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+    results = []
+    for biz in data.get("businesses", []):
+        name = biz.get("name", "")
+        if any(w in name.lower() for w in EXCLUDED_NAME_WORDS):
+            continue
+        loc = biz.get("location", {})
+        addr_parts = [loc.get("address1", ""), loc.get("city", ""), loc.get("state", "")]
+        results.append({
+            "id": f"yelp_{biz['id']}",
+            "google_place_id": None,
+            "name": name,
+            "address": ", ".join(p for p in addr_parts if p),
+            "lat": biz["coordinates"]["latitude"],
+            "lng": biz["coordinates"]["longitude"],
+            "rating": biz.get("rating", 0),
+            "review_count": biz.get("review_count", 0),
+            "photo_url": biz.get("image_url"),
+            "cuisine_tags": [c["alias"] for c in biz.get("categories", [])],
+            "price_level": biz.get("price"),
+            "website": biz.get("url"),
         })
     return results
 
