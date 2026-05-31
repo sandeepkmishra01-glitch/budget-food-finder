@@ -1,107 +1,20 @@
 import os
-import hashlib
 import asyncio
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
 from typing import Literal
 from pathlib import Path
 from collections import Counter
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Numeric, ForeignKey, text, select, ARRAY
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.sql import func
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase, relationship
 import httpx
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+asyncpg://localhost/food_finder")
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
-elif DATABASE_URL.startswith("postgresql://") and "+asyncpg" not in DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
-YELP_API_KEY = os.environ.get("YELP_API_KEY", "")
-CACHE_TTL_SEARCH = int(os.environ.get("CACHE_TTL_SEARCH", "3600"))
-CACHE_TTL_REVIEWS = int(os.environ.get("CACHE_TTL_REVIEWS", "86400"))
-
-# ── Database ────────────────────────────────────────────────────────────────
-
-engine = create_async_engine(DATABASE_URL, echo=False)
-async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-async def get_db():
-    async with async_session() as session:
-        yield session
-
-
-# ── Models ──────────────────────────────────────────────────────────────────
-
-class Restaurant(Base):
-    __tablename__ = "restaurants"
-    id = Column(Integer, primary_key=True)
-    yelp_id = Column(String, unique=True, nullable=True, index=True)
-    google_place_id = Column(String, unique=True, nullable=True, index=True)
-    name = Column(String, nullable=False)
-    address = Column(String)
-    lat = Column(Float)
-    lng = Column(Float)
-    cuisine_tags = Column(ARRAY(String))
-    price_level = Column(String)
-    photo_url = Column(String)
-
-
-class MenuItem(Base):
-    __tablename__ = "menu_items"
-    id = Column(Integer, primary_key=True)
-    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), index=True)
-    item_name = Column(String, nullable=False)
-    price = Column(Numeric(5, 2))
-    photo_url = Column(String)
-    source = Column(String)
-
-
-class SearchCache(Base):
-    __tablename__ = "search_cache"
-    id = Column(Integer, primary_key=True)
-    cache_key = Column(String, unique=True, index=True)
-    query_address = Column(String, nullable=False)
-    normalized_address = Column(String)
-    travel_mode = Column(String, nullable=False)
-    lat = Column(Float)
-    lng = Column(Float)
-    results_json = Column(JSONB, nullable=False)
-    result_count = Column(Integer)
-    radius_expanded = Column(Boolean, default=False)
-    cached_at = Column(DateTime, server_default=func.now())
-    expires_at = Column(DateTime)
-
-
-class ReviewCache(Base):
-    __tablename__ = "review_cache"
-    id = Column(Integer, primary_key=True)
-    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), index=True)
-    source = Column(String, nullable=False)
-    rating = Column(Numeric(2, 1))
-    review_count = Column(Integer)
-    snippets = Column(ARRAY(String))
-    dish_mentions = Column(ARRAY(String))
-    raw_reviews = Column(JSONB)
-    cached_at = Column(DateTime, server_default=func.now())
-    expires_at = Column(DateTime)
-
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -112,7 +25,7 @@ class SearchRequest(BaseModel):
 
 class ReviewSnippet(BaseModel):
     text: str
-    source: Literal["yelp", "google"]
+    source: str = "google"
 
 
 class RestaurantResult(BaseModel):
@@ -160,38 +73,8 @@ async def geocode_address(address: str) -> tuple[float, float] | None:
 
 
 async def search_restaurants(lat: float, lng: float) -> list[dict]:
-    yelp_results, google_results = await asyncio.gather(
-        _search_yelp(lat, lng), _search_google_places(lat, lng)
-    )
-    return _deduplicate(yelp_results + google_results)
+    return await _search_google_places(lat, lng)
 
-
-async def _search_yelp(lat: float, lng: float) -> list[dict]:
-    url = "https://api.yelp.com/v3/businesses/search"
-    headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
-    params = {
-        "latitude": lat, "longitude": lng, "radius": 8000,
-        "categories": "food,restaurants", "limit": 50, "sort_by": "best_match",
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=headers, params=params)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-    results = []
-    for biz in data.get("businesses", []):
-        loc = biz.get("location", {})
-        addr_parts = [loc.get("address1", ""), loc.get("city", ""), loc.get("state", "")]
-        results.append({
-            "id": f"yelp_{biz['id']}", "yelp_id": biz["id"], "name": biz["name"],
-            "address": ", ".join(p for p in addr_parts if p),
-            "lat": biz["coordinates"]["latitude"], "lng": biz["coordinates"]["longitude"],
-            "rating": biz.get("rating", 0), "review_count": biz.get("review_count", 0),
-            "photo_url": biz.get("image_url"),
-            "cuisine_tags": [c["alias"] for c in biz.get("categories", [])],
-            "price_level": biz.get("price"),
-        })
-    return results
 
 
 async def _search_google_places(lat: float, lng: float) -> list[dict]:
@@ -221,14 +104,6 @@ async def _search_google_places(lat: float, lng: float) -> list[dict]:
         })
     return results
 
-
-def _deduplicate(restaurants: list[dict]) -> list[dict]:
-    seen = {}
-    for r in restaurants:
-        key = r["name"].lower().strip()
-        if key not in seen or r.get("review_count", 0) > seen[key].get("review_count", 0):
-            seen[key] = r
-    return list(seen.values())
 
 
 BATCH_SIZE = 25
@@ -263,35 +138,14 @@ async def _fetch_travel_batch(client: httpx.AsyncClient, origin: str, batch: lis
     return results
 
 
-async def fetch_reviews_for_restaurants(restaurants: list[dict], db: AsyncSession) -> list[dict]:
-    tasks = [_fetch_reviews_single(r, db) for r in restaurants]
+async def fetch_reviews_for_restaurants(restaurants: list[dict]) -> list[dict]:
+    tasks = [_fetch_reviews_single(r) for r in restaurants]
     return await asyncio.gather(*tasks)
 
 
-async def _fetch_reviews_single(restaurant: dict, db: AsyncSession) -> dict:
-    restaurant_id = restaurant["id"]
-    cached = await db.execute(
-        select(ReviewCache).where(
-            ReviewCache.restaurant_id == hash(restaurant_id) % 2147483647,
-            ReviewCache.expires_at > datetime.now(timezone.utc),
-        )
-    )
-    cached_review = cached.scalar_one_or_none()
-    if cached_review:
-        restaurant["snippets"] = [{"text": s[:120], "source": cached_review.source} for s in (cached_review.snippets or [])[:2]]
-        restaurant["dish_mentions"] = cached_review.dish_mentions or []
-        return restaurant
-
+async def _fetch_reviews_single(restaurant: dict) -> dict:
     snippets = []
     raw_reviews = []
-
-    yelp_id = restaurant.get("yelp_id")
-    if yelp_id:
-        for review in await _fetch_yelp_reviews(yelp_id):
-            t = review.get("text", "")
-            raw_reviews.append(t)
-            if len(snippets) < 2:
-                snippets.append({"text": t[:120], "source": "yelp"})
 
     google_place_id = restaurant.get("google_place_id")
     if google_place_id:
@@ -304,16 +158,6 @@ async def _fetch_reviews_single(restaurant: dict, db: AsyncSession) -> dict:
     restaurant["snippets"] = snippets
     restaurant["raw_reviews"] = raw_reviews
     return restaurant
-
-
-async def _fetch_yelp_reviews(yelp_id: str) -> list[dict]:
-    url = f"https://api.yelp.com/v3/businesses/{yelp_id}/reviews"
-    headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=headers, params={"limit": 3, "sort_by": "yelp_sort"})
-        if resp.status_code != 200:
-            return []
-        return resp.json().get("reviews", [])
 
 
 async def _fetch_google_reviews(place_id: str) -> list[dict]:
@@ -437,12 +281,8 @@ app = FastAPI(title="Budget Food Finder", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health_check(db: AsyncSession = Depends(get_db)):
-    try:
-        await db.execute(text("SELECT 1"))
-        return {"status": "ok", "db": "connected"}
-    except Exception:
-        return {"status": "degraded", "db": "disconnected"}
+async def health_check():
+    return {"status": "ok"}
 
 
 @app.get("/api/cuisines")
@@ -451,20 +291,7 @@ async def get_cuisines():
 
 
 @app.post("/api/search", response_model=SearchResponse)
-async def search(request: SearchRequest, db: AsyncSession = Depends(get_db)):
-    normalized = request.address.strip().lower()
-    cache_key = hashlib.sha256(f"{normalized}:{request.travel_mode}".encode()).hexdigest()
-
-    cached = await db.execute(
-        select(SearchCache).where(
-            SearchCache.cache_key == cache_key,
-            SearchCache.expires_at > datetime.now(timezone.utc),
-        )
-    )
-    cached_result = cached.scalar_one_or_none()
-    if cached_result:
-        return SearchResponse(**cached_result.results_json)
-
+async def search(request: SearchRequest):
     coords = await geocode_address(request.address)
     if not coords:
         return SearchResponse(results=[], meta=SearchMeta(total_count=0, travel_mode=request.travel_mode))
@@ -492,14 +319,14 @@ async def search(request: SearchRequest, db: AsyncSession = Depends(get_db)):
                 results.append(r)
 
     results = [r for r in results if r.get("review_count", 0) >= MIN_REVIEW_COUNT]
-    results = await fetch_reviews_for_restaurants(results, db)
+    results = await fetch_reviews_for_restaurants(results)
     results = extract_dishes_for_restaurants(results)
     results = rank_results(results)
 
     for r in results:
         r["travel_mode"] = request.travel_mode
 
-    response = SearchResponse(
+    return SearchResponse(
         results=results,
         meta=SearchMeta(
             total_count=len(results),
@@ -508,19 +335,6 @@ async def search(request: SearchRequest, db: AsyncSession = Depends(get_db)):
             transit_unavailable=transit_unavailable,
         ),
     )
-
-    cache_entry = SearchCache(
-        cache_key=cache_key, query_address=request.address,
-        normalized_address=normalized, travel_mode=request.travel_mode,
-        lat=lat, lng=lng, results_json=response.model_dump(),
-        result_count=len(results), radius_expanded=radius_expanded,
-        cached_at=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc) + timedelta(seconds=CACHE_TTL_SEARCH),
-    )
-    db.add(cache_entry)
-    await db.commit()
-
-    return response
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────
