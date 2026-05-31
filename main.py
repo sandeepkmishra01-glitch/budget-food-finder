@@ -22,6 +22,8 @@ YELP_API_KEY = os.environ.get("YELP_API_KEY", "")
 class SearchRequest(BaseModel):
     address: str
     open_now: bool = True
+    travel_mode: str = "driving"
+    max_time: int = 20
 
 
 class BudgetItem(BaseModel):
@@ -39,6 +41,8 @@ class RestaurantResult(BaseModel):
     google_place_id: str | None = None
     website: str | None = None
     cuisine_tags: list[str] = []
+    travel_time_minutes: int | None = None
+    travel_mode: str | None = None
     rating: float
     review_count: int
     price_level: str | None = None
@@ -185,6 +189,38 @@ async def _search_foursquare(lat: float, lng: float, open_now: bool = True) -> l
             "price_level": price_map.get(fsq_price),
             "website": place.get("website"),
         })
+    return results
+
+
+BATCH_SIZE = 25
+
+
+async def get_travel_times(origin_lat: float, origin_lng: float, restaurants: list[dict], mode: str) -> dict[str, int]:
+    if not restaurants:
+        return {}
+    origin = f"{origin_lat},{origin_lng}"
+    batches = [restaurants[i:i + BATCH_SIZE] for i in range(0, len(restaurants), BATCH_SIZE)]
+    results = {}
+    async with httpx.AsyncClient() as client:
+        batch_results = await asyncio.gather(*[_fetch_travel_batch(client, origin, b, mode) for b in batches])
+    for br in batch_results:
+        results.update(br)
+    return results
+
+
+async def _fetch_travel_batch(client: httpx.AsyncClient, origin: str, batch: list[dict], mode: str) -> dict[str, int]:
+    destinations = "|".join(f"{r['lat']},{r['lng']}" for r in batch)
+    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+    params = {"origins": origin, "destinations": destinations, "mode": mode, "key": GOOGLE_MAPS_API_KEY}
+    resp = await client.get(url, params=params)
+    data = resp.json()
+    results = {}
+    elements = data.get("rows", [{}])[0].get("elements", [])
+    for i, element in enumerate(elements):
+        if i >= len(batch):
+            break
+        if element.get("status") == "OK":
+            results[batch[i]["id"]] = element["duration"]["value"] // 60
     return results
 
 
@@ -408,11 +444,22 @@ async def search(request: SearchRequest):
         restaurants = await search_restaurants(lat, lng, open_now=request.open_now)
 
         results = [r for r in restaurants if r.get("review_count", 0) >= MIN_REVIEW_COUNT or r["id"].startswith("fsq_")]
-        results = await fetch_reviews_for_restaurants(results)
-        results = extract_dishes_for_restaurants(results)
-        results = rank_results(results)
 
-        return {"results": results, "meta": {"total_count": len(results)}}
+        # Get travel times and filter by max_time
+        travel_times = await get_travel_times(lat, lng, results, request.travel_mode)
+        filtered = []
+        for r in results:
+            time_min = travel_times.get(r["id"])
+            if time_min is not None and time_min <= request.max_time:
+                r["travel_time_minutes"] = time_min
+                r["travel_mode"] = request.travel_mode
+                filtered.append(r)
+
+        filtered = await fetch_reviews_for_restaurants(filtered)
+        filtered = extract_dishes_for_restaurants(filtered)
+        filtered = rank_results(filtered)
+
+        return {"results": filtered, "meta": {"total_count": len(filtered), "travel_mode": request.travel_mode, "max_time": request.max_time}}
     except Exception as e:
         return {"results": [], "meta": {"total_count": 0, "error": str(e)}}
 
