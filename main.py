@@ -192,36 +192,29 @@ async def _search_foursquare(lat: float, lng: float, open_now: bool = True) -> l
     return results
 
 
-BATCH_SIZE = 25
+import math
+
+SPEED_KMH = {"driving": 30, "transit": 20, "walking": 5}
 
 
-async def get_travel_times(origin_lat: float, origin_lng: float, restaurants: list[dict], mode: str) -> dict[str, int]:
+def get_travel_times(origin_lat: float, origin_lng: float, restaurants: list[dict], mode: str) -> dict[str, int]:
     if not restaurants:
         return {}
-    origin = f"{origin_lat},{origin_lng}"
-    batches = [restaurants[i:i + BATCH_SIZE] for i in range(0, len(restaurants), BATCH_SIZE)]
+    speed = SPEED_KMH.get(mode, 30)
     results = {}
-    async with httpx.AsyncClient() as client:
-        batch_results = await asyncio.gather(*[_fetch_travel_batch(client, origin, b, mode) for b in batches])
-    for br in batch_results:
-        results.update(br)
+    for r in restaurants:
+        dist_km = _haversine(origin_lat, origin_lng, r["lat"], r["lng"])
+        time_min = round((dist_km / speed) * 60)
+        results[r["id"]] = max(1, time_min)
     return results
 
 
-async def _fetch_travel_batch(client: httpx.AsyncClient, origin: str, batch: list[dict], mode: str) -> dict[str, int]:
-    destinations = "|".join(f"{r['lat']},{r['lng']}" for r in batch)
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    params = {"origins": origin, "destinations": destinations, "mode": mode, "key": GOOGLE_MAPS_API_KEY}
-    resp = await client.get(url, params=params)
-    data = resp.json()
-    results = {}
-    elements = data.get("rows", [{}])[0].get("elements", [])
-    for i, element in enumerate(elements):
-        if i >= len(batch):
-            break
-        if element.get("status") == "OK":
-            results[batch[i]["id"]] = element["duration"]["value"] // 60
-    return results
+def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 async def _search_yelp(lat: float, lng: float) -> list[dict]:
@@ -445,8 +438,8 @@ async def search(request: SearchRequest):
 
         results = [r for r in restaurants if r.get("review_count", 0) >= MIN_REVIEW_COUNT or r["id"].startswith("fsq_")]
 
-        # Get travel times — filter by max_time if available, else show all
-        travel_times = await get_travel_times(lat, lng, results, request.travel_mode)
+        # Get travel times — filter by max_time
+        travel_times = get_travel_times(lat, lng, results, request.travel_mode)
         if travel_times:
             filtered = []
             for r in results:
