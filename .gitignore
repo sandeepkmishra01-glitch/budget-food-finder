@@ -1,5 +1,4 @@
 node_modules/
-static/
 .env
 __pycache__/
 *.pyc
