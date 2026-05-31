@@ -22,11 +22,6 @@ class SearchRequest(BaseModel):
     address: str
 
 
-class ReviewSnippet(BaseModel):
-    text: str
-    source: str = "google"
-
-
 class BudgetItem(BaseModel):
     name: str
     price_estimate: int
@@ -40,11 +35,11 @@ class RestaurantResult(BaseModel):
     lng: float
     photo_url: str | None = None
     google_place_id: str | None = None
+    website: str | None = None
     cuisine_tags: list[str] = []
     rating: float
     review_count: int
     price_level: str | None = None
-    snippets: list[ReviewSnippet] = []
     dish_mentions: list[str] = []
     budget_items: list[BudgetItem] = []
     score: float = 0.0
@@ -146,32 +141,30 @@ def _is_food_review(text: str) -> bool:
 
 
 async def _fetch_reviews_single(restaurant: dict) -> dict:
-    snippets = []
     raw_reviews = []
 
     google_place_id = restaurant.get("google_place_id")
     if google_place_id:
-        for review in await _fetch_google_reviews(google_place_id):
+        details = await _fetch_place_details(google_place_id)
+        restaurant["website"] = details.get("website")
+        for review in details.get("reviews", []):
             t = review.get("text", "")
             if not _is_food_review(t):
                 continue
             raw_reviews.append(t)
-            if len(snippets) < 2:
-                snippets.append({"text": t[:120], "source": "google"})
 
-    restaurant["snippets"] = snippets
     restaurant["raw_reviews"] = raw_reviews
     return restaurant
 
 
-async def _fetch_google_reviews(place_id: str) -> list[dict]:
+async def _fetch_place_details(place_id: str) -> dict:
     url = "https://maps.googleapis.com/maps/api/place/details/json"
-    params = {"place_id": place_id, "fields": "reviews", "key": GOOGLE_MAPS_API_KEY}
+    params = {"place_id": place_id, "fields": "reviews,website", "key": GOOGLE_MAPS_API_KEY}
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, params=params)
         if resp.status_code != 200:
-            return []
-        return resp.json().get("result", {}).get("reviews", [])
+            return {}
+        return resp.json().get("result", {})
 
 
 # ── Dish extractor ──────────────────────────────────────────────────────────
