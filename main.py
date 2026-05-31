@@ -2,7 +2,6 @@ import os
 import asyncio
 import re
 from contextlib import asynccontextmanager
-from typing import Literal
 from pathlib import Path
 from collections import Counter
 
@@ -20,6 +19,7 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
 class SearchRequest(BaseModel):
     address: str
+    open_now: bool = True
 
 
 class BudgetItem(BaseModel):
@@ -82,9 +82,9 @@ async def geocode_address(address: str) -> tuple[float, float] | None:
     return location["lat"], location["lng"]
 
 
-async def search_restaurants(lat: float, lng: float) -> list[dict]:
+async def search_restaurants(lat: float, lng: float, open_now: bool = True) -> list[dict]:
     search_types = ["restaurant", "cafe", "meal_takeaway", "bakery"]
-    tasks = [_search_by_type(lat, lng, t) for t in search_types]
+    tasks = [_search_by_type(lat, lng, t, open_now) for t in search_types]
     all_results = await asyncio.gather(*tasks)
     combined = []
     for batch in all_results:
@@ -98,9 +98,11 @@ async def search_restaurants(lat: float, lng: float) -> list[dict]:
     return list(seen.values())
 
 
-async def _search_by_type(lat: float, lng: float, place_type: str) -> list[dict]:
+async def _search_by_type(lat: float, lng: float, place_type: str, open_now: bool = True) -> list[dict]:
     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
     params = {"location": f"{lat},{lng}", "radius": 3000, "type": place_type, "key": GOOGLE_MAPS_API_KEY}
+    if open_now:
+        params["opennow"] = "true"
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, params=params)
         if resp.status_code != 200:
@@ -300,24 +302,21 @@ async def get_cuisines():
     return CUISINES
 
 
-@app.post("/api/search", response_model=SearchResponse)
+@app.post("/api/search")
 async def search(request: SearchRequest):
     coords = await geocode_address(request.address)
     if not coords:
-        return SearchResponse(results=[], meta=SearchMeta(total_count=0))
+        return {"results": [], "meta": {"total_count": 0}}
 
     lat, lng = coords
-    restaurants = await search_restaurants(lat, lng)
+    restaurants = await search_restaurants(lat, lng, open_now=request.open_now)
 
     results = [r for r in restaurants if r.get("review_count", 0) >= MIN_REVIEW_COUNT]
     results = await fetch_reviews_for_restaurants(results)
     results = extract_dishes_for_restaurants(results)
     results = rank_results(results)
 
-    return SearchResponse(
-        results=results,
-        meta=SearchMeta(total_count=len(results)),
-    )
+    return {"results": results, "meta": {"total_count": len(results)}}
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────
