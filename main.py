@@ -359,19 +359,22 @@ async def get_cuisines():
 
 @app.post("/api/search")
 async def search(request: SearchRequest):
-    coords = await geocode_address(request.address)
-    if not coords:
-        return {"results": [], "meta": {"total_count": 0}}
+    try:
+        coords = await geocode_address(request.address)
+        if not coords:
+            return {"results": [], "meta": {"total_count": 0}}
 
-    lat, lng = coords
-    restaurants = await search_restaurants(lat, lng, open_now=request.open_now)
+        lat, lng = coords
+        restaurants = await search_restaurants(lat, lng, open_now=request.open_now)
 
-    results = [r for r in restaurants if r.get("review_count", 0) >= MIN_REVIEW_COUNT]
-    results = await fetch_reviews_for_restaurants(results)
-    results = extract_dishes_for_restaurants(results)
-    results = rank_results(results)
+        results = [r for r in restaurants if r.get("review_count", 0) >= MIN_REVIEW_COUNT or r["id"].startswith("fsq_")]
+        results = await fetch_reviews_for_restaurants(results)
+        results = extract_dishes_for_restaurants(results)
+        results = rank_results(results)
 
-    return {"results": results, "meta": {"total_count": len(results)}}
+        return {"results": results, "meta": {"total_count": len(results)}}
+    except Exception as e:
+        return {"results": [], "meta": {"total_count": 0, "error": str(e)}}
 
 
 # ── Static frontend ─────────────────────────────────────────────────────────
