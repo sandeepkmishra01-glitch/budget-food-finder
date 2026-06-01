@@ -431,12 +431,18 @@ async def search(request: SearchRequest):
     try:
         coords = await geocode_address(request.address)
         if not coords:
-            return {"results": [], "meta": {"total_count": 0}}
+            return {"results": [], "meta": {"total_count": 0, "debug": "geocoding_failed"}}
 
         lat, lng = coords
         restaurants = await search_restaurants(lat, lng, open_now=request.open_now)
 
+        if not restaurants:
+            return {"results": [], "meta": {"total_count": 0, "debug": f"no_restaurants_found lat={lat} lng={lng}"}}
+
         results = [r for r in restaurants if r.get("review_count", 0) >= MIN_REVIEW_COUNT or r["id"].startswith("fsq_")]
+
+        if not results:
+            return {"results": [], "meta": {"total_count": 0, "debug": f"all_filtered_by_reviews raw={len(restaurants)}"}}
 
         # Get travel times — filter by max_time
         travel_times = get_travel_times(lat, lng, results, request.travel_mode)
@@ -452,6 +458,9 @@ async def search(request: SearchRequest):
             filtered = results
             for r in filtered:
                 r["travel_mode"] = request.travel_mode
+
+        if not filtered:
+            return {"results": [], "meta": {"total_count": 0, "debug": f"all_filtered_by_time pre_filter={len(results)} max_time={request.max_time}"}}
 
         filtered = await fetch_reviews_for_restaurants(filtered)
         filtered = extract_dishes_for_restaurants(filtered)
